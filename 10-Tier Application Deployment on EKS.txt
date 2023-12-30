@@ -1,0 +1,469 @@
+10-Tier Application Deployment on AWS EKS
+------------------------------------------------------
+
+
+1. Create an AWS EC2 instance (t3.large)
+
+2. Create a user in (IAM) and give the following permissions
+
+AmazonEC2FullAccess	
+AmazonEKS_CNI_Policy	
+AmazonEKSClusterPolicy	
+AmazonEKSWorkerNodePolicy	
+AWSCloudFormationFullAccess	
+eksfullAccess	Custom Inline-policy
+IAMFullAccess
+
+
+3. After connect install aws CLI on your server to give your credentials
+https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
+-> install aws cli latest-version
+	--> curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+	    unzip awscliv2.zip
+	    sudo ./aws/install
+	--> exit
+	--> aws --version
+
+
+
+4. After connecting install Jenkins on your server
+https://www.jenkins.io/doc/book/installing/linux/#debianubuntu
+
+sudo apt-get update
+sudo apt install openjdk-17-jdk -y
+sudo curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | sudo tee /usr/share/keyrings/jenkins-keyring.asc > /dev/null
+sudo echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/ | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
+sudo apt-get update 
+sudo apt-get install jenkins
+sudo systemctl enable jenkins
+sudo systemctl start jenkins
+sudo systemctl status jenkins
+
+
+
+5. Now install kubctl on the linux
+https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/#install-kubectl-binary-with-curl-on-linux
+
+--> install kubectl 
+	-> curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/1.25.7/2023-03-17/bin/linux/amd64/kubectl
+	--> ll
+	--> chmod +x kubectl
+	--> mv kubectl /usr/local/bin
+	--> echo $PATH
+	--> ll
+
+
+6. Install eksctl
+https://docs.aws.amazon.com/emr/latest/EMR-on-EKS-DevelopmentGuide/setting-up-eksctl.html
+--> install eksctl  
+	-> curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+	--> cd tmp
+	--> ll
+	--> sudo mv eksctl /usr/local/bin
+	--> eksctl version
+
+
+
+7. install docker and give permission
+sudo apt-get install docker.io
+sudo usermod -aG docker ubuntu
+sudo newgrp docker
+
+8. install sonarqube from docker image
+docker run -d -p 9000:9000 sonarqube:lts-community
+
+Now it is time to expose sonarqube and jenkins on ec2 instance
+go to ec2 instance and edit its inbound rules
+
+SonarQube is running on 9000
+Jenkins is running on 8080
+
+9. Install EKS
+
+eksctl create cluster --name=my-eks-t \
+        --region=ap-south-1 \
+        --zones=ap-south-1a,ap-south-1b \
+        --without-nodegroup
+
+// after the above setup complete run this
+eksctl utils associate-iam-oidc-provider \
+ --region ap-south-1 \
+ --cluster my-eks-t \
+ --approve 
+
+
+
+eksctl create nodegroup --cluster=my-eks-t \
+   --region=ap-south-1 \
+   --name=node2 \
+   --node-type=t3.medium \
+   --nodes=3 \
+   --nodes-min=2 \
+   --nodes-max=3 \
+   --node-volume-size=20 \
+   --ssh-public-key=Dev-pro \
+   --managed \
+   --asg-access \
+   --external-dns-access \
+   --full-ecr-access \
+   --appmesh-access \
+   --alb-ingress-access
+
+
+
+Install the following Plugins in Jenkins
+go jenkins and and click on plugins.
+
+sonarqube scanner
+sonarqube
+docker
+docker pipeline
+docker common
+cloudBees docker build and publish
+kubernetes
+kubernetes cli
+eclipse termux
+
+
+Now we need to configure Sonarqube with Jenkins  (squ_46674308e9862498676990687a2cd49680b57bfc)
+
+
+Now come to Jenkins
+click on manage Jenkins
+click on Create credentials
+click on global
+the token from sonarqube is paste here
+then add credentials..
+
+
+10. to connect Sonarqub sever we go manage Jenkins and click systems
+
+11. Go eks on AWS and add all traffic(anywhere) to its security group.
+
+
+-------------------------------------------------------------------------------------------------------
+
+12. Create a Service Account and role and Assign that role create a secret service account, and generate a token
+
+Creating Service Account
+
+1. create namespace
+
+kubectl create namespace webapps
+kubectl get namespace
+
+
+2. Create sa.yml file and add the follow code
+		
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins
+  namespace: webapps
+
+
+run the file
+kubectl apply -f sa.yaml
+
+3. Now we need to create role
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-role
+  namespace: webapps
+rules:
+- apiGroups:
+  - ""
+  - apps
+  - autoscaling
+  - batch
+  - extensions
+  - policy
+  - rbac.authorization.k8s.io
+  resources:
+  - pods
+  - configmaps
+  - deployments
+  - daemonsets
+  - componentstatuses
+  - events
+  - endpoints
+  - horizontalpodautoscalers
+  - ingress
+  - jobs
+  - limitranges
+  - namespaces
+  - nodes
+  - pods
+  - persistentvolumes
+  - persistentvolumeclaims
+  - resourcequotas
+  - replicasets
+  - replicationcontrollers
+  - serviceaccounts
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+
+
+
+
+4. now assigning the role to the service account
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-rolebinding
+  namespace: webapps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: app-role
+subjects:
+  - namespace: webapps
+    kind: ServiceAccount
+    name: jenkins
+
+
+5. now creating a token for service account
+we have created the secret file with the following command
+
+
+apiVersion: v1
+kind: Secret
+type: kubernetes.io/service-account-token
+metadata:
+  name: mysecretname
+  annotations:
+    kubernetes.io/service-account.name: jenkins
+
+-----------------------------------------------------------------------------
+
+
+Go to Jenkins and add a pipeline project
+
+
+pipeline {
+    agent any
+    environment{
+        SCANNER_HOME= tool 'sonar-scanner'
+    }
+    stages {
+        stage('git checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/cloudtarun97/10-tier_webapp.git'
+            }
+        }
+        stage('SonarQube') {
+            steps {
+                withSonarQubeEnv('sonar') {
+                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectKey=10-Tier -Dsonar.ProjectName=10-Tier -Dsonar.java.binaries=. '''   
+                }
+                    
+            }
+                
+        }
+        stage('adservice'){
+            steps{
+             script{
+              withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        dir('/var/lib/jenkins/workspace/10-tier/src/adservice') {
+                            sh 'docker build -t cloudtarun97/adservice:latest .'
+                            sh "docker push cloudtarun97/adservice:latest"
+                            sh "docker rmi cloudtarun97/adservice:latest"
+                        }
+                    }
+            }
+            }
+        }
+        
+        stage('cartservice'){
+            steps{
+             script{
+              withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        dir('/var/lib/jenkins/workspace/10-tier/src/cartservice/src/') {
+                            sh 'docker build -t cloudtarun97/cartservice:latest .'
+                            sh "docker push cloudtarun97/cartservice:latest"
+                            sh "docker rmi cloudtarun97/cartservice:latest"
+                        }
+                    }
+            }
+            }
+        }
+        
+        stage('checkoutservice'){
+            steps{
+             script{
+              withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        dir('/var/lib/jenkins/workspace/10-tier/src/checkoutservice/') {
+                            sh 'docker build -t cloudtarun97/checkoutservice:latest .'
+                            sh "docker push cloudtarun97/checkoutservice:latest"
+                            sh "docker rmi cloudtarun97/checkoutservice:latest"
+                        }
+                    }
+            }
+            }
+        }
+        
+        stage('currencyservice'){
+            steps{
+             script{
+              withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        dir('/var/lib/jenkins/workspace/10-tier/src/currencyservice/') {
+                            sh 'docker build -t cloudtarun97/currencyservice:latest .'
+                            sh "docker push cloudtarun97/currencyservice:latest"
+                            sh "docker rmi cloudtarun97/currencyservice:latest"
+                        }
+                    }
+            }
+            }
+        }
+        
+        stage('emailservice'){
+            steps{
+             script{
+              withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        dir('/var/lib/jenkins/workspace/10-tier/src/emailservice/') {
+                            sh 'docker build -t cloudtarun97/emailservice:latest .'
+                            sh "docker push cloudtarun97/emailservice:latest"
+                            sh "docker rmi cloudtarun97/emailservice:latest"
+                        }
+                    }
+            }
+            }
+        }
+        
+        stage('frontend'){
+            steps{
+             script{
+              withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        dir('/var/lib/jenkins/workspace/10-tier/src/frontend/') {
+                            sh 'docker build -t cloudtarun97/frontend:latest .'
+                            sh "docker push cloudtarun97/frontend:latest"
+                            sh "docker rmi cloudtarun97/frontend:latest"
+                        }
+                    }
+            }
+            }
+        }
+    
+        stage('loadgenerator'){
+            steps{
+             script{
+              withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        dir('/var/lib/jenkins/workspace/10-tier/src/loadgenerator/') {
+                            sh 'docker build -t cloudtarun97/loadgenerator:latest .'
+                            sh "docker push cloudtarun97/loadgenerator:latest"
+                            sh "docker rmi cloudtarun97/loadgenerator:latest"
+                        }
+                    }
+            }
+            }
+        }
+    
+        stage('paymentservice'){
+            steps{
+             script{
+              withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        dir('/var/lib/jenkins/workspace/10-tier/src/paymentservice/') {
+                            sh 'docker build -t cloudtarun97/paymentservice:latest .'
+                            sh "docker push cloudtarun97/paymentservice:latest"
+                            sh "docker rmi cloudtarun97/paymentservice:latest"
+                        }
+                    }
+            }
+            }
+        }
+        
+        stage('productcatalogservice'){
+            steps{
+             script{
+              withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        dir('/var/lib/jenkins/workspace/10-tier/src/productcatalogservice/') {
+                            sh 'docker build -t cloudtarun97/productcatalogservice:latest .'
+                            sh "docker push cloudtarun97/productcatalogservice:latest"
+                            sh "docker rmi cloudtarun97/productcatalogservice:latest"
+                        }
+                    }
+            }
+            }
+        }
+        
+        stage('recommendationservice'){
+            steps{
+             script{
+              withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        dir('/var/lib/jenkins/workspace/10-tier/src/recommendationservice/') {
+                            sh 'docker build -t cloudtarun97/recommendationservice:latest .'
+                            sh "docker push cloudtarun97/recommendationservice:latest"
+                            sh "docker rmi cloudtarun97/recommendationservice:latest"
+                        }
+                    }
+            }
+            }
+        }
+        
+        stage('shippingservice'){
+            steps{
+             script{
+              withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        dir('/var/lib/jenkins/workspace/10-tier/src/shippingservice/') {
+                            sh 'docker build -t cloudtarun97/shippingservice:latest .'
+                            sh "docker push cloudtarun97/shippingservice:latest"
+                            sh "docker rmi cloudtarun97/shippingservice:latest"
+                        }
+                    }
+            }
+            }
+        }
+        
+        stage('K8-Deploy'){
+            steps{
+                withKubeConfig(caCertificate: '', clusterName: 'my-eks-t', contextName: '', credentialsId: 'k8-token', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://B9006D029692A63C7789E16626800F53.sk1.ap-south-1.eks.amazonaws.com') {
+                    sh 'kubectl apply -f deployment-service.yml'
+                    sh 'kubectl get pods'
+                    sh 'kubectl get svc'
+                }
+            }
+        }
+}
+}
+
+--------------------------------------------
+
+Change samsorrahman with your dockerhub account username
+and also change the K8-Deploy key with your own key
+
+How to get the key run the following command on terminal
+
+kubectl -n describe secret mysecretname (k8-token)
+kubectl describe secret mysecretname -n webapps (copy the the token)
+
+Now come to Jenkins
+click on manage Jenkins
+click on Create credentials
+click on global
+the token from k8s-token is paste here (Secret-text)
+then add credentials..
+
+
+
+Now run the pipeline
+
+after running
+run the following command on terminal
+
+
+kubectl get pods -n webapps
+
+
+
+
